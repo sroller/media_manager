@@ -9,6 +9,8 @@ use Data::Printer;
 use Data::Dumper;
 use Digest::MD5;
 
+my $dbh = 0; # global database handle
+
 sub connect_database {
   my $driver = "SQLite";
   my $database = "media.db";
@@ -54,13 +56,13 @@ sub hash_to_json($) {
   return $json->encode(\%ihash);
 }
 
-sub insert_into_db($$$$$$$$$$$$$) {
-  my ($dbh, $path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon) = @_;
-  my $sql = qq[INSERT INTO media(path, filename, ext, size, mtime, digest, exif, width, height, duration, lat, lon)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)];
+sub insert_into_db($$$$$$$$$$$$$$) {
+  my ($dbh, $path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera) = @_;
+  my $sql = qq[INSERT INTO media(path, filename, ext, size, mtime, digest, exif, width, height, duration, lat, lon, camera)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)];
   my $sth = $dbh->prepare($sql);
-  $sth->execute($path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon)
-    or die $DBI::errstr;
+  $sth->execute($path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera)
+    or die "$DBI::errstr: $path, $digest";
 }
 
 # converts a string to seconds, possible variants
@@ -115,28 +117,28 @@ sub get_extension($) {
   return $ext;
 }
 
+# return 1 to ignore the path or 0 to process the path
+sub ignore_path($) {
+  my ($path) = @_;
+  if ($path =~ /\/Program Files\/|\/Program Files \(x86\)|ProgramData|\$Recycle\.Bin|\/AppData\/|\/mnt\/.\/Windows/i) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
 sub process_file($$) {
   my ($dbh, $fname) = @_;
-  my ($duration, $width, $height, $seconds, $json_exif, $digest, @st, $info, $ext, $lat, $lon);
+  my ($duration, $width, $height, $seconds, $json_exif, $digest, @st, $info, $ext,
+      $lat, $lon, $camera);
 
-  if ($fname =~ /Program Files/) {
-    print "ignored: $fname\n";
+  if (ignore_path($fname)) {
     return;
   }
 
-  if ($fname =~ /ProgramData/) {
-    print "ignored: $fname\n";
-    return;
-  }
-
-  if ($fname =~ /\$Recycle.Bin/) {
-    print "ignored: $fname\n";
-    return;
-  }
-  
   @st = stat($fname); # file size
   if ($st[7] < (64 * 1024)) {
-    print "ignored: $File::Find::name\n";
+    # print "ignored: $File::Find::name\n";
     return;
   }
 
@@ -150,27 +152,41 @@ sub process_file($$) {
   $ext = get_extension($fname);
   $lat = %$info{'GPSLatitude'};
   $lon = %$info{'GPSLongitude'};
+  $camera = %$info{'Model'};
   $json_exif = hash_to_json($info);
   $digest = digest_from_file($File::Find::name);
   insert_into_db($dbh, $File::Find::name, $_, $ext, $st[7], $st[9], $digest, $json_exif,
-                 $width, $height, $seconds, $lat, $lon);
+                 $width, $height, $seconds, $lat, $lon, $camera);
+}
+
+sub wanted {
+  if (-f and /\.(jpeg|jpg|png|mts|m2ts|avi|webm|mp4|mks|mkv)$/i) {
+    print "$File::Find::name\n";
+    process_file($main::dbh, $File::Find::name);
+  }
+}
+
+sub preprocess {
+  # print "preprocess $File::Find::dir\n";
+  # print @_;
+  if (ignore_path($File::Find::dir)) {
+    print "ignore directory $File::Find::dir\n";
+    return [];
+  } else {
+    return @_;
+  }
 }
 
 # main starts here
 
-my $dir = shift || ".";
+my @dirs = @ARGV;
 
-print "start in directory=$dir\n";
+p @dirs;
 
-my $dbh = connect_database();
+$main::dbh = connect_database();
 
-find(sub {
-  if (-f and /\.(jpeg|jpg|png|mts|m2ts|avi|webm|mp4|mks|mkv)$/i) {
-    print "$File::Find::name\n";
-    process_file($dbh, $File::Find::name);
-  }
-}, $dir);
+find({wanted => \&wanted, follow => 0, preprocess => \&preprocess}, @dirs);
 
-$dbh->disconnect();
+$main::dbh->disconnect();
 __DATA__
 select path, (select j.value from json_each(t.exif) AS j WHERE j.key = 'CreateDate') AS data from media as t where data is null;
