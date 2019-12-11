@@ -1,5 +1,7 @@
 #!/bin/bash
 
-rm -i media.db
+if [ -f media.db ]; then
+    rm -i media.db
+  fi
 sqlite3 media.db < createdb.sql
 
