@@ -1,0 +1,5 @@
+#!/bin/bash
+
+rm -i media.db
+sqlite3 media.db < createdb.sql
+
