@@ -56,12 +56,12 @@ sub hash_to_json($) {
   return $json->encode(\%ihash);
 }
 
-sub insert_into_db($$$$$$$$$$$$$$) {
-  my ($dbh, $path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera) = @_;
-  my $sql = qq[INSERT INTO media(path, filename, ext, size, mtime, digest, exif, width, height, duration, lat, lon, camera)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)];
+sub insert_into_db($$$$$$$$$$$$$$$) {
+  my ($dbh, $path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera, $orig_time) = @_;
+  my $sql = qq[INSERT INTO media(path, filename, ext, size, mtime, digest, exif, width, height, duration, lat, lon, camera, datetime_original)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)];
   my $sth = $dbh->prepare($sql);
-  $sth->execute($path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera)
+  $sth->execute($path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera, $orig_time)
     or die "$DBI::errstr: $path, $digest";
 }
 
@@ -80,7 +80,7 @@ sub duration_to_seconds($) {
   } else {
     die "'$s': I don't understand this string";
   }
-  print "Duration=", ($hour * 3600 + $min * 60 + $sec), "sec\n";
+  print "Duration=", ($hour * 3600 + $min * 60 + $sec), " sec ($s)\n";
   return ($hour * 3600 + $min * 60 + $sec);
 }
 
@@ -130,7 +130,7 @@ sub ignore_path($) {
 sub process_file($$) {
   my ($dbh, $fname) = @_;
   my ($duration, $width, $height, $seconds, $json_exif, $digest, @st, $info, $ext,
-      $lat, $lon, $camera);
+      $lat, $lon, $camera, $orig_time);
 
   if (ignore_path($fname)) {
     return;
@@ -153,10 +153,11 @@ sub process_file($$) {
   $lat = %$info{'GPSLatitude'};
   $lon = %$info{'GPSLongitude'};
   $camera = %$info{'Model'};
+  $orig_time = %$info{'DateTimeOriginal'};
   $json_exif = hash_to_json($info);
   $digest = digest_from_file($File::Find::name);
   insert_into_db($dbh, $File::Find::name, $_, $ext, $st[7], $st[9], $digest, $json_exif,
-                 $width, $height, $seconds, $lat, $lon, $camera);
+                 $width, $height, $seconds, $lat, $lon, $camera, $orig_time);
 }
 
 sub wanted {
@@ -177,15 +178,38 @@ sub preprocess {
   }
 }
 
+sub list_doubles($) {
+  my ($dbh) = @_;
+  my $stmt = $dbh->prepare("SELECT COUNT(*), digest FROM media GROUP BY digest HAVING COUNT(*) > 14");
+  my $rv = $stmt->execute();
+  my ($count, $digest, $path, $size, $date, @digests);
+  while (($count, $digest) = $stmt->fetchrow()) {
+    print "$count, $digest\n";
+    push @digests, $digest;
+  }
+  print Dumper @digests;
+  my $files = $dbh->prepare("SELECT size, path, datetime_original  FROM media WHERE digest = ?");
+  foreach $digest (@digests) {
+    $rv = $files->execute($digest);
+    while (($size, $path, $date) = $files->fetchrow()) {
+      print "$size: $path, $date\n";
+    }
+    print "---------------------------------\n";
+  }
+  exit;
+}
+
 # main starts here
 
 my @dirs = @ARGV;
 
-p @dirs;
+# p @dirs;
 
 $main::dbh = connect_database();
 
 find({wanted => \&wanted, follow => 0, preprocess => \&preprocess}, @dirs);
+
+# list_doubles($main::dbh);
 
 $main::dbh->disconnect();
 __DATA__
