@@ -1,6 +1,6 @@
 CREATE TABLE media (
   tstmp DATETIME DEFAULT CURRENT_TIMESTAMP,
-  path string,
+  path string PRIMARY KEY,
   filename string,
   ext string,
   size number,

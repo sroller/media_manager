@@ -8,12 +8,14 @@ use File::Find;
 use Data::Printer;
 use Data::Dumper;
 use Digest::MD5;
+use Getopt::Long;
 
 my $dbh = 0; # global database handle
+my $verbose = 0;
 
-sub connect_database {
+sub connect_database($) {
+  my ($database) = @_;
   my $driver = "SQLite";
-  my $database = "media.db";
   my $dsn = "DBI:$driver:dbname=$database";
   my $userid = "";
   my $password = "";
@@ -63,6 +65,21 @@ sub insert_into_db($$$$$$$$$$$$$$$) {
   my $sth = $dbh->prepare($sql);
   $sth->execute($path, $filename, $ext, $size, $mtime, $digest, $exif, $width, $height, $duration, $lat, $lon, $camera, $orig_time)
     or die "$DBI::errstr: $path, $digest";
+}
+
+sub fetch_file_info($$) {
+  my ($dbh, $path) = @_;
+  my $sql = qq[SELECT path, filename, ext, size, mtime, digest FROM media WHERE path = ?];
+  my $stmt = $dbh->prepare($sql);
+  $stmt->execute($path) or die "$DBI::errstr: $path";
+  return $stmt->fetchrow_hashref('NAME_lc');
+}
+
+sub reset_state($$) {
+  my ($dbh, $path) = @_;
+  my $sql = qq[UPDATE media SET state = 0 WHERE path = ?];
+  my $stmt = $dbh->prepare($sql);
+  $stmt->execute($path) or die "$DBI::errstr: $path";
 }
 
 # converts a string to seconds, possible variants
@@ -129,19 +146,24 @@ sub ignore_path($) {
 
 sub process_file($$) {
   my ($dbh, $fname) = @_;
-  my ($duration, $width, $height, $seconds, $json_exif, $digest, @st, $info, $ext,
+  my ($duration, $width, $height, $seconds, $json_exif, $digest, $info, $ext,
       $lat, $lon, $camera, $orig_time);
 
-  if (ignore_path($fname)) {
+  my ($dev, $ino, $mode, $nlink, $uid, $gid, $rdev, $fsize, $atime, $mtime, $ctime, $blksize, $blocks) = stat $fname;
+  if ($fsize < (1024)) {
+    print "too small: $fname\n";
+    return;
+  }
+  
+  my $file_info = fetch_file_info($dbh, $fname);
+  # insert if not found
+  # update if found but changed
+  if ($fsize == $file_info->{'size'} || $mtime == $file_info->{'mtime'}) { # presumably not change since last scan
+    reset_state($dbh, $fname);
     return;
   }
 
-  @st = stat($fname); # file size
-  if ($st[7] < (64 * 1024)) {
-    # print "ignored: $File::Find::name\n";
-    return;
-  }
-
+  print "add: $fname\n";
   $info = ImageInfo($fname);
 
   $duration = %$info{'Duration'};
@@ -156,14 +178,17 @@ sub process_file($$) {
   $orig_time = %$info{'DateTimeOriginal'};
   $json_exif = hash_to_json($info);
   $digest = digest_from_file($File::Find::name);
-  insert_into_db($dbh, $File::Find::name, $_, $ext, $st[7], $st[9], $digest, $json_exif,
+  insert_into_db($dbh, $File::Find::name, $_, $ext, $fsize, $mtime, $digest, $json_exif,
                  $width, $height, $seconds, $lat, $lon, $camera, $orig_time);
 }
 
 sub wanted {
   if (-f and /\.(jpeg|jpg|png|mts|m2ts|avi|webm|mp4|mks|mkv)$/i) {
-    print "$File::Find::name\n";
-    process_file($main::dbh, $File::Find::name);
+
+    unless (ignore_path($File::Find::name)) {
+      # print "$File::Find::name";
+      process_file($main::dbh, $File::Find::name);
+    }
   }
 }
 
@@ -199,18 +224,66 @@ sub list_doubles($) {
   exit;
 }
 
+sub delete_orphans($$) {
+  my ($dbh, $dirs) = @_;
+  my ($path, $dir, $fcount);
+  $fcount = 0;
+  foreach $dir (@{$dirs}) {
+    my $stmt = $dbh->prepare("SELECT path FROM media WHERE path like '$dir%'");
+    print "check under $dir\n" if $verbose;
+    $stmt->execute();
+    while (($path) = $stmt->fetchrow()) {
+      # print "check $path\n";
+      printf "%i\r", $fcount++ if $verbose;
+      unless (-e $path) {
+        print "$path not found\n";
+        $dbh->do("DELETE FROM media WHERE path = '$path'");
+        $DBI::err && die $DBI::errstr;
+      }
+    }
+  }
+}
+
+
 # main starts here
+#
 
-my @dirs = @ARGV;
+my %opt = ();
+my @dirs = ();
+my $database = 'media.db';
 
-# p @dirs;
+GetOptions(\%opt,
+          "verbose!" => \$verbose,
+           "database=s" => \$database,
+           "orphans",
+           "doubles",
+           "update",
+           "dirs=s{1,}" => \@dirs
+           );
+           
 
-$main::dbh = connect_database();
+# if there is no explicit directory parameter
+# we'll use the remainder of the command line as directories
+if (scalar @dirs == 0) {
+  @dirs = @ARGV;
+}
 
-find({wanted => \&wanted, follow => 0, preprocess => \&preprocess}, @dirs);
+$main::dbh = connect_database($database);
 
-# list_doubles($main::dbh);
+if ($opt{'doubles'}) {
+  list_doubles($main::dbh);
+}
+
+if ($opt{'update'}) {
+  find({wanted => \&wanted, follow => 0, preprocess => \&preprocess}, @dirs);
+}
+
+if ($opt{'orphans'}) {
+  print "delete orphans\n";
+  delete_orphans($main::dbh, \@dirs);
+}
 
 $main::dbh->disconnect();
+
 __DATA__
 select path, (select j.value from json_each(t.exif) AS j WHERE j.key = 'CreateDate') AS data from media as t where data is null;
