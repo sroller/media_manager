@@ -1,10 +1,13 @@
 #!/usr/bin/perl
 
 use strict;
+use warnings;
 use DBI;
 use JSON;
 use Image::ExifTool ':Public';
 use File::Find;
+use File::Basename;
+use Cwd;
 use Data::Printer;
 use Data::Dumper;
 use Digest::MD5;
@@ -24,15 +27,21 @@ sub connect_database($) {
   return $dbh;
 }
 
+# absolute path of script
+# that's where we'll look for the database
+sub my_dir() {
+  return File::Basename::dirname(Cwd::abs_path($0));
+}
+
 sub digest_from_file($) {
-  my $file = @_[0];
+  my $file = $_[0];
   my $md5 = Digest::MD5->new;
   open(my $F, $file) or die $!;
   return Digest::MD5->new->addfile($F)->hexdigest;
 }
 
 sub hash_to_json($) {
-  my %info = %{@_[0]};
+  my %info = %{$_[0]};
   my %ihash;
   my $json = JSON->new();
 
@@ -250,10 +259,12 @@ sub delete_orphans($$) {
 
 my %opt = ();
 my @dirs = ();
-my $database = 'media.db';
+my $database = my_dir() . '/media.db';
+
+print "database=$database\n";
 
 GetOptions(\%opt,
-          "verbose!" => \$verbose,
+           "verbose!" => \$verbose,
            "database=s" => \$database,
            "orphans",
            "doubles",
