@@ -97,7 +97,7 @@ sub reset_state($$) {
 # returns number of seconds
 sub duration_to_seconds($) {
   my ($s) = @_;
-  my ($hour, $min, $sec, $msec);
+  my ($hour, $min, $sec, $msec) = (0, 0, 0, 0);
 
   if (($sec) = $s =~ /^([.\d]+) s$/) {
     # don't do anything just now
@@ -153,6 +153,14 @@ sub ignore_path($) {
   }
 }
 
+# get the 'real' time of the picture or movie
+# priority
+# 1. EXIF:DateTimeOriginal
+# 2. EXIF:CreateTime
+# 3. File:ModifiedTime
+sub control_time() {
+}
+
 sub process_file($$) {
   my ($dbh, $fname) = @_;
   my ($duration, $width, $height, $seconds, $json_exif, $digest, $info, $ext,
@@ -167,9 +175,12 @@ sub process_file($$) {
   my $file_info = fetch_file_info($dbh, $fname);
   # insert if not found
   # update if found but changed
-  if ($fsize == $file_info->{'size'} || $mtime == $file_info->{'mtime'}) { # presumably not change since last scan
-    reset_state($dbh, $fname);
-    return;
+
+  if (defined($file_info)) {
+    if ($fsize == $file_info->{'size'} || $mtime == $file_info->{'mtime'}) { # presumably not change since last scan
+      reset_state($dbh, $fname);
+      return;
+    }
   }
 
   print "add: $fname\n";
